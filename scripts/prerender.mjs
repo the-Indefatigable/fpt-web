@@ -291,11 +291,11 @@ for (const tool of tools) {
   count++;
 }
 
-// 5. Blog: index + one page per published post, read from Firestore at build time.
+// 5. Blog: index + one page per published post, read from the committed snapshot scripts/blog-posts.json.
 //    Replaces the separate firstprinciple-blog app that /blog used to be proxied to.
 //    The article is real HTML inside #root (visible to crawlers, link previews and no-JS readers);
 //    React replaces it when the app boots.
-const posts = await loadPublishedPosts();
+const posts = loadPublishedPosts();
 if (posts) {
   const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
   const readTime = (c) => `${Math.max(1, Math.ceil(c.trim().split(/\s+/).length / 200))} min read`;
