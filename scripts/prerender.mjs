@@ -10,6 +10,11 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { loadPublishedPosts } from './blog-data.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, '..', 'dist');
@@ -284,6 +289,81 @@ for (const tool of tools) {
   });
   writePage('reviews', html);
   count++;
+}
+
+// 5. Blog: index + one page per published post, read from Firestore at build time.
+//    Replaces the separate firstprinciple-blog app that /blog used to be proxied to.
+//    The article is real HTML inside #root (visible to crawlers, link previews and no-JS readers);
+//    React replaces it when the app boots.
+const posts = await loadPublishedPosts();
+if (posts) {
+  const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString('en-CA', { year: 'numeric', month: 'short', day: 'numeric' }) : '');
+  const readTime = (c) => `${Math.max(1, Math.ceil(c.trim().split(/\s+/).length / 200))} min read`;
+  const ldJson = (o) => JSON.stringify(o).replace(/</g, '\\u003c');
+  const withRoot = (html, inner) => html.replace('<div id="root"></div>', `<div id="root">${inner}</div>`);
+  const BLOG_SUFFIX = ' | FirstPrinciple Blog';
+
+  // 5a. Index
+  {
+    const title = `Blog — STEM Tutorials & Guides${BLOG_SUFFIX}`;
+    const description = 'Deep-dive tutorials on Math, Physics, and Computer Science. First-principles explanations with free interactive tools.';
+    const canonical = `${DOMAIN}/blog`;
+    const cards = posts.map(p => `<article><h2><a href="/blog/${escHtml(p.slug)}">${escHtml(p.title)}</a></h2><p>${escHtml(p.description)}</p><p>${escHtml(p.tag)} · ${escHtml(fmtDate(p.createdAt))}</p></article>`).join('\n');
+    let html = injectMeta(template, {
+      title, description, canonical,
+      breadcrumbs: [{ name: 'Home', url: `${DOMAIN}/` }, { name: 'Blog', url: canonical }],
+      noscript: noscriptContent('FirstPrinciple Blog', description, [{ href: '/', text: 'Back to Home' }]),
+    });
+    html = withRoot(html, `<main class="blog-container"><h1>FirstPrinciple Blog</h1><p>${escHtml(description)}</p>\n${cards}</main>`);
+    writePage('blog', html);
+    count++;
+  }
+
+  // 5b. Posts
+  for (const p of posts) {
+    const canonical = `${DOMAIN}/blog/${p.slug}`;
+    const title = `${p.title}${BLOG_SUFFIX}`;
+    const body = renderToStaticMarkup(createElement(ReactMarkdown, { remarkPlugins: [remarkGfm], skipHtml: true, children: p.content }));
+    const articleLD = ldJson({
+      '@context': 'https://schema.org', '@type': 'Article',
+      headline: p.title, description: p.description,
+      datePublished: p.createdAt, dateModified: p.updatedAt,
+      author: { '@type': 'Organization', name: 'FirstPrinciple Tutoring', url: DOMAIN },
+      publisher: { '@type': 'Organization', name: 'FirstPrinciple Tutoring' },
+      mainEntityOfPage: canonical,
+    });
+    let html = injectMeta(template, {
+      title, description: p.description, canonical, ogType: 'article',
+      breadcrumbs: [
+        { name: 'Home', url: `${DOMAIN}/` },
+        { name: 'Blog', url: `${DOMAIN}/blog` },
+        { name: p.title, url: canonical },
+      ],
+      extraLD: articleLD,
+      noscript: noscriptContent(p.title, p.description, [{ href: '/blog', text: 'Back to all posts' }]),
+    });
+    const articleMeta = `\n  <meta property="article:published_time" content="${escHtml(p.createdAt)}" />` +
+      `\n  <meta property="article:author" content="FirstPrinciple Tutoring" />`;
+    html = html.replace('</head>', `${articleMeta}\n</head>`);
+    html = withRoot(html, `<main class="blog-container"><article><header class="post-header"><a href="/blog" class="post-header-back">← Back to all posts</a><h1>${escHtml(p.title)}</h1><div class="post-header-meta"><span class="post-card-tag">${escHtml(p.tag)}</span> <span>${escHtml(fmtDate(p.createdAt))}</span> · <span>${readTime(p.content)}</span></div></header><div class="prose">${body}</div><p><a href="${DOMAIN}">Book a free 30-minute consultation with a FirstPrinciple tutor →</a></p></article></main>`);
+    writePage(`blog/${p.slug}`, html);
+    count++;
+  }
+
+  // 5c. Sitemap: the static entries from public/sitemap.xml, minus any hand-written /blog URLs,
+  //     plus every published post (lastmod = the post's updatedAt/createdAt).
+  const smPath = join(DIST, 'sitemap.xml');
+  const sm = readFileSync(smPath, 'utf-8');
+  const stripped = sm
+    .replace(/\s*<!-- Blog -->/, '')
+    .replace(/\s*<url><loc>[^<]*\/blog(?:\/[^<]*)?<\/loc>[\s\S]*?<\/url>/g, '');
+  const day = (iso) => (iso || new Date().toISOString()).slice(0, 10);
+  const blogUrls = [
+    `  <url><loc>${DOMAIN}/blog</loc><lastmod>${day(posts[0].updatedAt || posts[0].createdAt)}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>`,
+    ...posts.map(p => `  <url><loc>${DOMAIN}/blog/${escHtml(p.slug)}</loc><lastmod>${day(p.updatedAt || p.createdAt)}</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>`),
+  ].join('\n');
+  writeFileSync(smPath, stripped.replace('</urlset>', `\n  <!-- Blog (generated at build from Firestore) -->\n${blogUrls}\n</urlset>`));
+  console.log(`Sitemap: ${posts.length + 1} blog URLs generated`);
 }
 
 console.log(`Prerendered ${count} pages into dist/`);

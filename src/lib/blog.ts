@@ -27,19 +27,19 @@ export async function fetchAllPosts(): Promise<BlogPost[]> {
 
 /* ── Fetch published posts only (public blog) ── */
 export async function fetchPublishedPosts(): Promise<BlogPost[]> {
-    const q = query(
-        collection(db, COL),
-        orderBy('createdAt', 'desc')
-    );
+    // Ask Firestore for published posts only: drafts must never reach a visitor's browser.
+    // Equality-only filter, so no composite index is needed; sort newest first here.
+    const q = query(collection(db, COL), where('published', '==', true));
     const snap = await getDocs(q);
+    const ms = (p: BlogPost) => p.createdAt?.toMillis?.() ?? 0;
     return snap.docs
         .map(d => ({ id: d.id, ...d.data() } as BlogPost))
-        .filter(p => p.published);
+        .sort((a, b) => ms(b) - ms(a));
 }
 
-/* ── Fetch single post by slug ── */
+/* ── Fetch single published post by slug (drafts are never returned to the public site) ── */
 export async function fetchPostBySlug(slug: string): Promise<BlogPost | null> {
-    const q = query(collection(db, COL), where('slug', '==', slug));
+    const q = query(collection(db, COL), where('slug', '==', slug), where('published', '==', true));
     const snap = await getDocs(q);
     if (snap.empty) return null;
     const d = snap.docs[0];
